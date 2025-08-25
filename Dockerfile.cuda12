@@ -1,0 +1,177 @@
+# Dockerfile CORRETO - Driver 575.64 suporta CUDA 12.x!
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# FORÇAR uso de GPU
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    CUDA_VISIBLE_DEVICES=0 \
+    DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/models \
+    USE_GPU=true \
+    CUDA_LAUNCH_BLOCKING=1
+
+# Instalar Python 3.11 e CUDA toolkit
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    python3.11-distutils \
+    git \
+    curl \
+    gcc \
+    g++ \
+    # Adicionar ferramentas CUDA
+    cuda-toolkit-12-1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar PyTorch para CUDA 12.1 - VERSÃO CORRETA!
+RUN python3.11 -m pip install --upgrade pip setuptools wheel && \
+    python3.11 -m pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# Instalar outras dependências
+RUN python3.11 -m pip install --no-cache-dir \
+    transformers==4.36.2 \
+    sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1 \
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0 \
+    nvidia-ml-py3
+
+# Copiar código
+COPY app/ /app/app/
+
+# Criar diretórios
+RUN mkdir -p /app/data /app/models
+
+# Script de inicialização
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+echo "==========================================="
+echo "🚀 Driver NVIDIA 575.64 - CUDA 12.9 Disponível!"
+echo "==========================================="
+
+# Mostrar informações do sistema
+nvidia-smi 2>/dev/null || echo "nvidia-smi não disponível no container"
+
+echo ""
+echo "📊 Verificando GPU com Python..."
+python3.11 -c "
+import torch
+import os
+
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA Runtime: {torch.version.cuda}')
+print(f'CUDNN: {torch.backends.cudnn.version()}')
+print(f'CUDA Available: {torch.cuda.is_available()}')
+
+if torch.cuda.is_available():
+    print(f'✅ GPU Detectada: {torch.cuda.get_device_name(0)}')
+    print(f'✅ Compute Capability: {torch.cuda.get_device_capability(0)}')
+    print(f'✅ Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
+    os.environ['USE_GPU'] = 'true'
+    
+    # Testar operação simples
+    try:
+        x = torch.ones(1).cuda()
+        print('✅ GPU funcionando perfeitamente!')
+    except Exception as e:
+        print(f'❌ Erro ao usar GPU: {e}')
+else:
+    print('❌ GPU não disponível')
+    print('Possíveis causas:')
+    print('1. Container não tem acesso à GPU (--gpus all)')
+    print('2. Runtime nvidia não configurado')
+    os.environ['USE_GPU'] = 'false'
+" || echo "Erro ao verificar GPU"
+
+# Verificar com nvidia-ml-py
+echo ""
+echo "📊 Verificando com nvidia-ml-py..."
+python3.11 -c "
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    count = pynvml.nvmlDeviceGetCount()
+    print(f'✅ {count} GPU(s) detectada(s) via nvidia-ml-py')
+    for i in range(count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
+        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        print(f'  GPU {i}: {name} - {mem.total / 1024**3:.1f} GB')
+except Exception as e:
+    print(f'❌ nvidia-ml-py: {e}')
+" || echo "nvidia-ml-py não funcionou"
+
+echo ""
+echo "📦 Carregando modelos..."
+
+# Carregar modelos
+python3.11 -c "
+import os
+# Forçar uso de GPU se disponível
+device = 'cuda:0' if os.environ.get('USE_GPU') == 'true' else 'cpu'
+print(f'Usando device: {device}')
+
+from sentence_transformers import SentenceTransformer
+print('Carregando modelo denso...')
+model = SentenceTransformer('intfloat/multilingual-e5-large', device=device)
+print('✅ Modelo denso carregado')
+
+from transformers import AutoTokenizer, AutoModelForMaskedLM
+print('Carregando modelo esparso...')
+tokenizer = AutoTokenizer.from_pretrained('prithivida/Splade_PP_en_v1')
+model = AutoModelForMaskedLM.from_pretrained('prithivida/Splade_PP_en_v1')
+if device == 'cuda:0':
+    model = model.cuda()
+print('✅ Modelo esparso carregado')
+"
+
+echo ""
+echo "✅ Iniciando API..."
+echo "==========================================="
+
+# Forçar variáveis
+export CUDA_VISIBLE_DEVICES=0
+export USE_GPU=true
+
+exec python3.11 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+EOF
+
+RUN chmod +x /app/start.sh
+
+# Verificar CUDA na build
+RUN python3.11 -c "import torch; print(f'Build: PyTorch {torch.__version__}, CUDA {torch.version.cuda}')" || true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+EXPOSE 8000
+
+CMD ["/app/start.sh"]
