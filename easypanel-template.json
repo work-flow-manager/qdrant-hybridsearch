@@ -1,0 +1,66 @@
+{
+  "services": {
+    "qdrant": {
+      "image": "qdrant/qdrant:latest",
+      "environment": {
+        "QDRANT__SERVICE__HTTP_PORT": "6333",
+        "QDRANT__SERVICE__GRPC_PORT": "6334",
+        "QDRANT__LOG_LEVEL": "INFO"
+      },
+      "volumes": [
+        {
+          "hostPath": "/var/lib/easypanel/projects/${projectId}/qdrant-storage",
+          "containerPath": "/qdrant/storage"
+        }
+      ],
+      "ports": [
+        "6333",
+        "6334"
+      ]
+    },
+    "app": {
+      "image": "ghcr.io/work-flow-manager/qdrant-hybridsearch:latest",
+      "environment": {
+        "API_HOST": "0.0.0.0",
+        "API_PORT": "8000",
+        "API_KEY": "${API_KEY}",
+        "QDRANT_HOST": "qdrant",
+        "QDRANT_PORT": "6333",
+        "QDRANT_COLLECTION": "hybrid_search",
+        "DENSE_MODEL": "intfloat/multilingual-e5-large",
+        "SPARSE_MODEL": "prithivida/Splade_PP_en_v1",
+        "USE_GPU": "false",
+        "BATCH_SIZE": "32",
+        "MAX_SEQUENCE_LENGTH": "512",
+        "NUM_WORKERS": "4",
+        "CACHE_EMBEDDINGS": "true",
+        "EMBEDDING_CACHE_SIZE": "10000",
+        "N8N_WEBHOOK_ENABLED": "true",
+        "N8N_WEBHOOK_TIMEOUT": "30",
+        "LOG_LEVEL": "INFO",
+        "LOG_FORMAT": "json",
+        "CORS_ENABLED": "true",
+        "CORS_ORIGINS": "[\"*\"]"
+      },
+      "volumes": [
+        {
+          "hostPath": "/var/lib/easypanel/projects/${projectId}/models-cache",
+          "containerPath": "/app/models"
+        },
+        {
+          "hostPath": "/var/lib/easypanel/projects/${projectId}/app-data",
+          "containerPath": "/app/data"
+        }
+      ],
+      "ports": [
+        "8000"
+      ],
+      "domains": [
+        {
+          "host": "$(EASYPANEL_DOMAIN)",
+          "port": 8000
+        }
+      ]
+    }
+  }
+}
