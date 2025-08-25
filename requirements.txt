@@ -1,0 +1,31 @@
+# Core dependencies
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+pydantic-settings
+
+# Qdrant and embeddings
+qdrant-client[fastembed]
+fastembed
+
+# ML models with GPU support
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+transformers
+sentence-transformers
+
+# Utilities
+pydantic
+numpy
+scipy
+httpx
+aiofiles
+
+# Monitoring and logging
+prometheus-client
+structlog
+
+# API documentation
+python-jose[cryptography]
+passlib[bcrypt]
