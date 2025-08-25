@@ -1,30 +1,50 @@
-# DOCKERFILE PARA EASYPANEL COM GPU
-# Use este arquivo diretamente no Easypanel!
+# DOCKERFILE PARA EASYPANEL COM GPU - RTX 4000
+# Versão corrigida e atualizada
 
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+# Usar imagem CUDA mais recente (não deprecated)
+FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
 
 # Configurações essenciais
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/models \
     TRANSFORMERS_CACHE=/app/models \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    CUDA_VISIBLE_DEVICES=0 \
+    PATH="/usr/local/cuda/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
-# Instalar Python e dependências
+# Instalar Python e dependências do sistema
 RUN apt-get update && apt-get install -y \
-    python3.11 python3-pip curl wget git gcc g++ \
+    python3.11 \
+    python3.11-dev \
+    python3.11-distutils \
+    python3-pip \
+    curl \
+    wget \
+    git \
+    gcc \
+    g++ \
+    build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/bin/python3.11 /usr/bin/python
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3
+
+# Atualizar pip
+RUN python -m pip install --upgrade pip setuptools wheel
 
 WORKDIR /app
 
-# Instalar PyTorch com CUDA
+# Instalar PyTorch com CUDA 12.1 (versão mais recente compatível)
 RUN pip install --no-cache-dir \
-    torch==2.1.0+cu121 torchvision==0.16.0+cu121 \
+    torch==2.2.0 \
+    torchvision==0.17.0 \
+    torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Instalar dependências
+# Instalar dependências principais
 RUN pip install --no-cache-dir \
     transformers==4.36.2 \
     sentence-transformers==2.2.2 \
@@ -35,22 +55,82 @@ RUN pip install --no-cache-dir \
     pydantic-settings==2.1.0 \
     numpy==1.24.3 \
     accelerate==0.25.0 \
-    structlog==23.2.0
+    structlog==23.2.0 \
+    python-multipart \
+    python-dotenv
+
+# Copiar requirements.txt primeiro (se existir)
+COPY requirements.txt* ./
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
 # Copiar aplicação
 COPY app/ /app/app/
-COPY requirements.txt .
 
-# Criar diretórios
-RUN mkdir -p /app/models /app/data
+# Criar diretórios necessários
+RUN mkdir -p /app/models /app/data /app/logs
 
-# Script de inicialização
-RUN echo '#!/bin/bash\n\
-echo "🚀 Iniciando com GPU..."\n\
-nvidia-smi || echo "GPU será detectada em runtime"\n\
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000' > /app/start.sh \
-    && chmod +x /app/start.sh
+# Script de verificação de GPU
+RUN echo '#!/bin/bash' > /app/check_gpu.py && \
+    echo 'import torch' >> /app/check_gpu.py && \
+    echo 'print("🔍 Verificando GPU...")' >> /app/check_gpu.py && \
+    echo 'print(f"CUDA disponível: {torch.cuda.is_available()}")' >> /app/check_gpu.py && \
+    echo 'if torch.cuda.is_available():' >> /app/check_gpu.py && \
+    echo '    print(f"GPU detectada: {torch.cuda.get_device_name(0)}")' >> /app/check_gpu.py && \
+    echo '    print(f"Número de GPUs: {torch.cuda.device_count()}")' >> /app/check_gpu.py && \
+    echo '    print(f"CUDA Version: {torch.version.cuda}")' >> /app/check_gpu.py && \
+    echo 'else:' >> /app/check_gpu.py && \
+    echo '    print("⚠️ GPU não detectada - rodando em CPU")' >> /app/check_gpu.py && \
+    chmod +x /app/check_gpu.py
 
+# Script de inicialização melhorado
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "========================================="
+echo "🚀 Iniciando aplicação com suporte GPU"
+echo "========================================="
+
+# Verificar nvidia-smi (pode não estar disponível em runtime containers)
+if command -v nvidia-smi &> /dev/null; then
+    echo "📊 Informações da GPU (nvidia-smi):"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
+else
+    echo "ℹ️ nvidia-smi não disponível (normal em runtime containers)"
+fi
+
+# Verificar GPU via PyTorch
+echo ""
+echo "🔧 Verificando GPU via PyTorch:"
+python /app/check_gpu.py
+
+echo ""
+echo "========================================="
+echo "📡 Iniciando servidor FastAPI..."
+echo "========================================="
+
+# Verificar se o módulo uvicorn está instalado
+python -c "import uvicorn" 2>/dev/null || {
+    echo "❌ Erro: uvicorn não encontrado. Instalando..."
+    pip install uvicorn[standard]
+}
+
+# Iniciar aplicação
+exec python -m uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --reload \
+    --log-level info
+EOF
+
+RUN chmod +x /app/start.sh
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Expor porta
 EXPOSE 8000
 
-CMD ["/app/start.sh"]
+# Comando de inicialização
+CMD ["/bin/bash", "/app/start.sh"]
