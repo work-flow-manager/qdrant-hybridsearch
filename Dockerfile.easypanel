@@ -1,0 +1,67 @@
+# Dockerfile otimizado para Easypanel - Build mais rápido sem GPU
+FROM python:3.11-slim
+
+# Variáveis de ambiente
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/models
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Diretório de trabalho
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar dependências Python (versão CPU)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir \
+    transformers==4.36.0 \
+    sentence-transformers==2.2.2 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1
+
+# Copiar código da aplicação
+COPY app/ /app/app/
+
+# Criar diretórios necessários
+RUN mkdir -p /app/data /app/models
+
+# Script de inicialização para download de modelos
+RUN echo '#!/bin/bash\n\
+echo "Baixando modelos na primeira execução..."\n\
+python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"intfloat/multilingual-e5-large\")" || true\n\
+python3 -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; AutoTokenizer.from_pretrained(\"prithivida/Splade_PP_en_v1\"); AutoModelForMaskedLM.from_pretrained(\"prithivida/Splade_PP_en_v1\")" || true\n\
+echo "Iniciando API..."\n\
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1' > /app/start.sh && \
+    chmod +x /app/start.sh
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Porta
+EXPOSE 8000
+
+# Comando de inicialização
+CMD ["/app/start.sh"]
