@@ -1,0 +1,86 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__LOG_LEVEL: "INFO"
+    networks:
+      - app-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - models-cache:/app/models
+      - app-data:/app/data
+    environment:
+      # Configurações da API
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_KEY: "Gw9iEdSGbAlsyoiT5YEJUbCy6O33bfxs9CV2-iZQjN4"  # CHAVE GERADA - GUARDE COM SEGURANÇA!
+      
+      # Configurações do Qdrant
+      QDRANT_HOST: "qdrant"
+      QDRANT_PORT: "6333"
+      QDRANT_COLLECTION: "hybrid_search"
+      
+      # Modelos de IA
+      DENSE_MODEL: "intfloat/multilingual-e5-large"
+      SPARSE_MODEL: "prithivida/Splade_PP_en_v1"
+      
+      # CONFIGURAÇÕES GPU - ATIVADAS!
+      USE_GPU: "true"
+      CUDA_DEVICE: "0"
+      CUDA_VISIBLE_DEVICES: "0"
+      BATCH_SIZE: "64"  # Aumentado para GPU
+      MAX_SEQUENCE_LENGTH: "512"
+      
+      # Performance
+      NUM_WORKERS: "4"
+      CACHE_EMBEDDINGS: "true"
+      EMBEDDING_CACHE_SIZE: "10000"
+      
+      # Integração n8n
+      N8N_WEBHOOK_ENABLED: "true"
+      N8N_WEBHOOK_TIMEOUT: "30"
+      
+      # Logs
+      LOG_LEVEL: "INFO"
+      LOG_FORMAT: "json"
+      
+      # CORS
+      CORS_ENABLED: "true"
+      CORS_ORIGINS: '["*"]'
+      
+    depends_on:
+      - qdrant
+    networks:
+      - app-network
+    # Configuração GPU para Docker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  qdrant-storage:
+  models-cache:
+  app-data:
+
+networks:
+  app-network:
+    driver: bridge

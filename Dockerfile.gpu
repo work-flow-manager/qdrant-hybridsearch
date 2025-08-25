@@ -1,0 +1,79 @@
+# Dockerfile com suporte GPU para Easypanel
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Variáveis de ambiente para GPU
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CUDA_VISIBLE_DEVICES=0 \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0" \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/models \
+    USE_GPU=true
+
+# Instalar Python e dependências do sistema
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    git \
+    curl \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Diretório de trabalho
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar PyTorch com suporte CUDA
+RUN python3 -m pip install --upgrade pip && \
+    pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+# Instalar outras dependências
+RUN pip install --no-cache-dir \
+    transformers==4.36.0 \
+    sentence-transformers==2.2.2 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1 \
+    accelerate==0.25.0
+
+# Copiar código da aplicação
+COPY app/ /app/app/
+
+# Criar diretórios necessários
+RUN mkdir -p /app/data /app/models
+
+# Script de inicialização com verificação de GPU
+RUN echo '#!/bin/bash\n\
+echo "🚀 Iniciando com suporte GPU..."\n\
+echo "📊 Verificando GPU disponível:"\n\
+python3 -c "import torch; print(f\"CUDA disponível: {torch.cuda.is_available()}\"); print(f\"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"Não detectada\"}\")" \n\
+echo "📦 Baixando modelos (se necessário)..."\n\
+python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"intfloat/multilingual-e5-large\")" || true\n\
+python3 -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; AutoTokenizer.from_pretrained(\"prithivida/Splade_PP_en_v1\"); AutoModelForMaskedLM.from_pretrained(\"prithivida/Splade_PP_en_v1\")" || true\n\
+echo "✅ Sistema pronto! Iniciando API..."\n\
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1' > /app/start.sh && \
+    chmod +x /app/start.sh
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Porta
+EXPOSE 8000
+
+# Comando
+CMD ["/app/start.sh"]
