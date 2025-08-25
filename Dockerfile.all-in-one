@@ -1,0 +1,176 @@
+# ========================================
+# DOCKERFILE ALL-IN-ONE PARA EASYPANEL
+# Inclui Qdrant + App em uma única imagem
+# ========================================
+
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Configurar ambiente
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/models \
+    # GPU Settings
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    CUDA_VISIBLE_DEVICES=0 \
+    USE_GPU=true \
+    # Qdrant Settings
+    QDRANT_HOST=localhost \
+    QDRANT_PORT=6333
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    # Python
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    # Build tools
+    gcc g++ make cmake \
+    # Qdrant dependencies
+    curl wget git \
+    # Supervisor para rodar múltiplos processos
+    supervisor \
+    # Cleanup
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
+
+# Instalar Qdrant GPU
+RUN mkdir -p /qdrant && \
+    cd /qdrant && \
+    wget https://github.com/qdrant/qdrant/releases/download/v1.12.5/qdrant-x86_64-unknown-linux-gnu-gpu.tar.gz && \
+    tar -xzf qdrant-x86_64-unknown-linux-gnu-gpu.tar.gz && \
+    rm qdrant-x86_64-unknown-linux-gnu-gpu.tar.gz && \
+    chmod +x /qdrant/qdrant
+
+# Configurar diretório de trabalho
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar PyTorch com CUDA
+RUN pip install --no-cache-dir \
+    torch==2.1.0+cu121 \
+    torchvision==0.16.0+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Instalar dependências Python
+RUN pip install --no-cache-dir \
+    transformers==4.36.2 \
+    sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1 \
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0
+
+# Copiar código da aplicação
+COPY app/ /app/app/
+COPY .env.gpu /app/.env
+
+# Criar diretórios necessários
+RUN mkdir -p /app/data /app/models /app/logs /qdrant/storage
+
+# Configurar Supervisor
+RUN cat > /etc/supervisor/conf.d/supervisord.conf << 'EOF'
+[supervisord]
+nodaemon=true
+logfile=/var/log/supervisor/supervisord.log
+pidfile=/var/run/supervisord.pid
+
+[program:qdrant]
+command=/qdrant/qdrant --config-path /qdrant/config.yaml
+directory=/qdrant
+autostart=true
+autorestart=true
+stdout_logfile=/app/logs/qdrant.log
+stderr_logfile=/app/logs/qdrant.err
+priority=1
+
+[program:app]
+command=python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+directory=/app
+autostart=true
+autorestart=true
+startsecs=10
+stdout_logfile=/app/logs/app.log
+stderr_logfile=/app/logs/app.err
+environment=PATH="/usr/local/bin:/usr/bin:/bin",QDRANT_HOST="localhost",QDRANT_PORT="6333"
+priority=2
+EOF
+
+# Criar configuração do Qdrant
+RUN cat > /qdrant/config.yaml << 'EOF'
+storage:
+  storage_path: /qdrant/storage
+  performance:
+    max_threads: 8
+  optimizers:
+    indexing_threshold: 10000
+
+service:
+  http_port: 6333
+  grpc_port: 6334
+  enable_tls: false
+
+gpu:
+  indexing: true
+  force_half_precision: false
+  device_filter: 0
+
+log_level: INFO
+EOF
+
+# Script de inicialização
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+echo "========================================="
+echo "🚀 ALL-IN-ONE: Qdrant + App com GPU"
+echo "========================================="
+
+# Verificar GPU
+python -c "
+import torch
+if torch.cuda.is_available():
+    print(f'✅ GPU detectada: {torch.cuda.get_device_name(0)}')
+    print(f'   Memória: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB')
+else:
+    print('⚠️ GPU não disponível - usando CPU')
+"
+
+echo ""
+echo "🗄️ Iniciando Qdrant com GPU..."
+echo "🌐 Iniciando aplicação..."
+echo ""
+
+# Iniciar supervisor
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+EOF
+
+RUN chmod +x /app/start.sh
+
+# Expor portas
+EXPOSE 6333 6334 8000
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+    CMD curl -f http://localhost:8000/health && curl -f http://localhost:6333/health || exit 1
+
+# Comando de inicialização
+CMD ["/app/start.sh"]

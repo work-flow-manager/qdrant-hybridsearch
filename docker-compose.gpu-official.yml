@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # Qdrant com GPU Support (RTX 4000)
+  qdrant:
+    image: qdrant/qdrant:gpu-nvidia-latest
+    container_name: qdrant-gpu
+    restart: unless-stopped
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - ./qdrant_storage:/qdrant/storage:z
+    environment:
+      # GPU Configuration
+      QDRANT__GPU__INDEXING: "1"  # Enable GPU indexing
+      QDRANT__GPU__FORCE_HALF_PRECISION: "false"  # RTX 4000 supports full precision
+      QDRANT__GPU__DEVICE_FILTER: "0"  # Use GPU 0 (RTX 4000)
+      
+      # General Configuration
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__LOG_LEVEL: "INFO"
+      QDRANT__STORAGE__STORAGE_PATH: "/qdrant/storage"
+      
+      # Performance settings for RTX 4000 (8GB VRAM)
+      QDRANT__STORAGE__PERFORMANCE__INDEXING_THRESHOLD_KB: "20000"
+      QDRANT__STORAGE__PERFORMANCE__MEMMAP_THRESHOLD_KB: "50000"
+      QDRANT__STORAGE__PERFORMANCE__PAYLOAD_M: "16"
+      QDRANT__STORAGE__PERFORMANCE__MAX_THREADS: "8"
+      
+      # Optimize for GPU
+      QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD: "10000"
+      QDRANT__STORAGE__OPTIMIZERS__VACUUM_MIN_VECTOR_NUMBER: "10000"
+    
+    # GPU Configuration for Docker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    
+    # Alternative for docker run (comment out deploy section above)
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    
+    networks:
+      - qdrant-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # Aplicação Hybrid Search com GPU Support
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: qdrant-hybrid-search:gpu-latest
+    container_name: qdrant-hybrid-search-gpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # API FastAPI
+      - "8001:8001"  # Metrics (opcional)
+    volumes:
+      - ./models:/app/models:rw
+      - ./data:/app/data:rw
+      - ./logs:/app/logs:rw
+    environment:
+      # API Configuration
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_KEY: "${API_KEY:-}"
+      
+      # Qdrant Connection
+      QDRANT_HOST: "qdrant"
+      QDRANT_PORT: "6333"
+      QDRANT_COLLECTION: "hybrid_search"
+      
+      # Model Configuration
+      DENSE_MODEL: "intfloat/multilingual-e5-large"
+      SPARSE_MODEL: "prithivida/Splade_PP_en_v1"
+      
+      # GPU Configuration for RTX 4000
+      USE_GPU: "true"
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      CUDA_LAUNCH_BLOCKING: "0"
+      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:512"
+      
+      # Performance Optimization for RTX 4000 (8GB VRAM)
+      BATCH_SIZE: "64"  # Increased for GPU
+      MAX_SEQUENCE_LENGTH: "512"
+      NUM_WORKERS: "8"
+      CACHE_EMBEDDINGS: "true"
+      EMBEDDING_CACHE_SIZE: "50000"  # Larger cache with GPU
+      
+      # Additional Settings
+      N8N_WEBHOOK_ENABLED: "true"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      CORS_ENABLED: "true"
+      CORS_ORIGINS: '["*"]'
+      
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    
+    # GPU Configuration for Docker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # RTX 4000
+              capabilities: [gpu, compute, utility]
+    
+    networks:
+      - qdrant-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+# Networks
+networks:
+  qdrant-network:
+    driver: bridge
+    name: qdrant-network
+
+# Volumes
+volumes:
+  qdrant_storage:
+    driver: local
+  models:
+    driver: local
+  data:
+    driver: local
+  logs:
+    driver: local

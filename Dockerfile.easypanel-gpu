@@ -1,207 +1,55 @@
-# Dockerfile ESPECIAL para Easypanel com GPU FORÇADA
+# DOCKERFILE PARA EASYPANEL COM GPU
+# Use este arquivo diretamente no Easypanel!
+
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
-# FORÇAR detecção de GPU
-ENV NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
-    CUDA_VISIBLE_DEVICES=0 \
-    FORCE_CUDA=1 \
-    CUDA_LAUNCH_BLOCKING=0 \
-    DEBIAN_FRONTEND=noninteractive \
+# Configurações essenciais
+ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/models \
     TRANSFORMERS_CACHE=/app/models \
-    SENTENCE_TRANSFORMERS_HOME=/app/models \
-    USE_GPU=true
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Instalar Python 3.11 e dependências
+# Instalar Python e dependências
 RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-dev \
-    python3-pip \
-    python3.11-distutils \
-    git \
-    curl \
-    gcc \
-    g++ \
-    # Ferramentas NVIDIA
-    nvidia-utils-520 \
+    python3.11 python3-pip curl wget git gcc g++ \
     && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+    && ln -s /usr/bin/python3.11 /usr/bin/python
 
 WORKDIR /app
 
-# Copiar requirements
-COPY requirements.txt .
+# Instalar PyTorch com CUDA
+RUN pip install --no-cache-dir \
+    torch==2.1.0+cu121 torchvision==0.16.0+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
 
-# Instalar PyTorch com CUDA FORÇADO
-RUN python3.11 -m pip install --upgrade pip setuptools wheel && \
-    python3.11 -m pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
-    python3.11 -m pip install nvidia-ml-py3
-
-# Instalar todas as dependências
-RUN python3.11 -m pip install --no-cache-dir \
+# Instalar dependências
+RUN pip install --no-cache-dir \
     transformers==4.36.2 \
     sentence-transformers==2.2.2 \
-    huggingface-hub==0.19.4 \
     qdrant-client==1.7.0 \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
     pydantic-settings==2.1.0 \
     numpy==1.24.3 \
-    scikit-learn==1.3.2 \
-    python-multipart==0.0.6 \
-    httpx==0.25.1 \
-    python-jose[cryptography]==3.3.0 \
-    passlib[bcrypt]==1.7.4 \
-    aiofiles==23.2.1 \
     accelerate==0.25.0 \
-    structlog==23.2.0 \
-    uvloop==0.19.0 \
-    scipy==1.11.4 \
-    pillow==10.1.0
+    structlog==23.2.0
 
-# Copiar código
+# Copiar aplicação
 COPY app/ /app/app/
+COPY requirements.txt .
 
 # Criar diretórios
-RUN mkdir -p /app/data /app/models
+RUN mkdir -p /app/models /app/data
 
-# Script que FORÇA uso de GPU
-RUN cat > /app/start.sh << 'EOF'
-#!/bin/bash
-echo "==========================================="
-echo "🚀 FORÇANDO DETECÇÃO DE GPU NO EASYPANEL"
-echo "==========================================="
-
-# Tentar detectar GPU de várias formas
-echo "🔍 Método 1: nvidia-smi"
-nvidia-smi 2>/dev/null && echo "✅ nvidia-smi detectou GPU" || echo "❌ nvidia-smi falhou"
-
-echo ""
-echo "🔍 Método 2: Verificação Python com CUDA forçado"
-python3.11 -c "
-import os
-import sys
-
-# Forçar variáveis de ambiente
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-os.environ['USE_GPU'] = 'true'
-os.environ['FORCE_CUDA'] = '1'
-
-print('Variáveis de ambiente configuradas:')
-print(f'  CUDA_VISIBLE_DEVICES: {os.environ.get(\"CUDA_VISIBLE_DEVICES\")}')
-print(f'  NVIDIA_VISIBLE_DEVICES: {os.environ.get(\"NVIDIA_VISIBLE_DEVICES\")}')
-print(f'  USE_GPU: {os.environ.get(\"USE_GPU\")}')
-print('')
-
-try:
-    import torch
-    print(f'🔧 PyTorch version: {torch.__version__}')
-    print(f'🔧 CUDA compiled: {torch.version.cuda}')
-    
-    # Tentar forçar CUDA
-    if not torch.cuda.is_available():
-        print('⚠️ CUDA não disponível diretamente')
-        print('🔧 Tentando forçar inicialização CUDA...')
-        
-        # Tentar diferentes métodos
-        try:
-            torch.cuda.init()
-            print('✅ CUDA init executado')
-        except:
-            print('❌ CUDA init falhou')
-        
-        # Verificar novamente
-        if torch.cuda.is_available():
-            print('✅ CUDA agora disponível!')
-        else:
-            print('⚠️ CUDA ainda não disponível')
-            print('📝 Nota: No Easypanel, pode ser necessário:')
-            print('   1. Adicionar runtime: nvidia no docker-compose')
-            print('   2. Ou mapear devices: /dev/nvidia*')
-    else:
-        print(f'✅ CUDA disponível!')
-        print(f'✅ GPU: {torch.cuda.get_device_name(0)}')
-        print(f'✅ Memória: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
-        
-except Exception as e:
-    print(f'❌ Erro: {e}')
-"
-
-echo ""
-echo "🔍 Método 3: nvidia-ml-py"
-python3.11 -c "
-try:
-    import pynvml
-    pynvml.nvmlInit()
-    device_count = pynvml.nvmlDeviceGetCount()
-    print(f'✅ nvidia-ml-py detectou {device_count} GPU(s)')
-    for i in range(device_count):
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
-        print(f'   GPU {i}: {name}')
-except Exception as e:
-    print(f'❌ nvidia-ml-py falhou: {e}')
-"
-
-echo ""
-echo "==========================================="
-echo "📦 Carregando modelos..."
-echo "==========================================="
-
-# Forçar USE_GPU=true sempre
-export USE_GPU=true
-export CUDA_VISIBLE_DEVICES=0
-export FORCE_CUDA=1
-
-python3.11 -c "
-import os
-os.environ['USE_GPU'] = 'true'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-
-try:
-    print('📥 Carregando modelo denso...')
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer('intfloat/multilingual-e5-large', device='cuda:0' if os.environ.get('USE_GPU') == 'true' else 'cpu')
-    print('✅ Modelo denso carregado')
-except Exception as e:
-    print(f'⚠️ Modelo denso: {e}')
-
-try:
-    print('📥 Carregando modelo esparso...')
-    from transformers import AutoTokenizer, AutoModelForMaskedLM
-    tokenizer = AutoTokenizer.from_pretrained('prithivida/Splade_PP_en_v1')
-    model = AutoModelForMaskedLM.from_pretrained('prithivida/Splade_PP_en_v1')
-    print('✅ Modelo esparso carregado')
-except Exception as e:
-    print(f'⚠️ Modelo esparso: {e}')
-"
-
-echo ""
-echo "==========================================="
-echo "✅ Iniciando API com GPU FORÇADA..."
-echo "==========================================="
-
-# Iniciar com variáveis forçadas
-export USE_GPU=true
-export CUDA_VISIBLE_DEVICES=0
-export FORCE_CUDA=1
-
-exec python3.11 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-EOF
-
-RUN chmod +x /app/start.sh
-
-# Verificar GPU na build (opcional)
-RUN python3.11 -c "import torch; print(f'Build time - CUDA: {torch.version.cuda}')" || true
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Script de inicialização
+RUN echo '#!/bin/bash\n\
+echo "🚀 Iniciando com GPU..."\n\
+nvidia-smi || echo "GPU será detectada em runtime"\n\
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000' > /app/start.sh \
+    && chmod +x /app/start.sh
 
 EXPOSE 8000
 
