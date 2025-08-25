@@ -129,6 +129,15 @@ Authorization: Bearer YOUR_API_KEY
 
 ## 🚀 Deploy no Easypanel
 
+### Usando a Imagem Pronta do GitHub Container Registry
+
+```yaml
+# Use este docker-compose.production.yml no Easypanel
+image: ghcr.io/work-flow-manager/qdrant-hybridsearch:latest
+```
+
+### Deploy Rápido
+
 ### Via Interface Web
 
 1. Acesse o Easypanel em `http://seu-servidor:3000`

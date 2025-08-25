@@ -1,0 +1,101 @@
+{
+  "name": "Qdrant Hybrid Search",
+  "description": "GPU-accelerated hybrid search system with Qdrant",
+  "services": [
+    {
+      "name": "qdrant",
+      "image": "qdrant/qdrant:latest",
+      "ports": [
+        {
+          "published": 6333,
+          "target": 6333,
+          "protocol": "tcp"
+        },
+        {
+          "published": 6334,
+          "target": 6334,
+          "protocol": "tcp"
+        }
+      ],
+      "volumes": [
+        {
+          "name": "qdrant-storage",
+          "mountPath": "/qdrant/storage"
+        }
+      ],
+      "environment": {
+        "QDRANT__SERVICE__HTTP_PORT": "6333",
+        "QDRANT__SERVICE__GRPC_PORT": "6334",
+        "QDRANT__LOG_LEVEL": "INFO"
+      }
+    },
+    {
+      "name": "hybrid-search-api",
+      "image": "ghcr.io/work-flow-manager/qdrant-hybridsearch:latest",
+      "ports": [
+        {
+          "published": 8000,
+          "target": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "volumes": [
+        {
+          "name": "models-cache",
+          "mountPath": "/app/models"
+        },
+        {
+          "name": "app-data",
+          "mountPath": "/app/data"
+        }
+      ],
+      "environment": {
+        "API_HOST": "0.0.0.0",
+        "API_PORT": "8000",
+        "API_KEY": "${API_KEY}",
+        "QDRANT_HOST": "qdrant",
+        "QDRANT_PORT": "6333",
+        "QDRANT_COLLECTION": "hybrid_search",
+        "DENSE_MODEL": "intfloat/multilingual-e5-large",
+        "SPARSE_MODEL": "prithivida/Splade_PP_en_v1",
+        "USE_GPU": "${USE_GPU:-false}",
+        "BATCH_SIZE": "${BATCH_SIZE:-32}",
+        "N8N_WEBHOOK_ENABLED": "true"
+      },
+      "domains": [
+        {
+          "name": "api.yourdomain.com",
+          "port": 8000
+        }
+      ],
+      "healthCheck": {
+        "path": "/health",
+        "interval": 30,
+        "timeout": 10
+      }
+    }
+  ],
+  "variables": [
+    {
+      "name": "API_KEY",
+      "label": "API Key",
+      "description": "Secure API key for authentication",
+      "required": true,
+      "default": "change-me-before-deploy"
+    },
+    {
+      "name": "USE_GPU",
+      "label": "Enable GPU",
+      "description": "Enable GPU acceleration (requires NVIDIA GPU)",
+      "required": false,
+      "default": "false"
+    },
+    {
+      "name": "BATCH_SIZE",
+      "label": "Batch Size",
+      "description": "Batch size for processing (reduce if OOM)",
+      "required": false,
+      "default": "32"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./data/qdrant:/qdrant/storage
+      - qdrant-storage:/qdrant/storage
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
@@ -16,18 +16,16 @@ services:
     networks:
       - qdrant-network
 
-  # Hybrid Search API with GPU support
+  # Hybrid Search API - Using pre-built image from GitHub Container Registry
   hybrid-search-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.simple
+    image: ghcr.io/work-flow-manager/qdrant-hybridsearch:latest
     container_name: hybrid-search-api
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
-      - ./models:/app/models
-      - ./data:/app/data
+      - models-cache:/app/models
+      - app-data:/app/data
     environment:
       # API Configuration
       - API_HOST=0.0.0.0
@@ -43,10 +41,10 @@ services:
       - DENSE_MODEL=intfloat/multilingual-e5-large
       - SPARSE_MODEL=prithivida/Splade_PP_en_v1
       
-      # GPU Settings for RTX 4000
-      - USE_GPU=true
+      # GPU Settings (set USE_GPU=true if you have NVIDIA GPU)
+      - USE_GPU=${USE_GPU:-false}
       - CUDA_DEVICE=0
-      - BATCH_SIZE=32
+      - BATCH_SIZE=${BATCH_SIZE:-32}
       - MAX_SEQUENCE_LENGTH=512
       
       # Performance Settings
@@ -59,7 +57,7 @@ services:
       - N8N_WEBHOOK_TIMEOUT=30
       
       # Logging
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FORMAT=json
       
       # CORS
@@ -70,7 +68,7 @@ services:
       - qdrant
     networks:
       - qdrant-network
-    # GPU support - uncomment if nvidia-docker is installed
+    # Uncomment below if you have NVIDIA GPU with docker runtime
     # deploy:
     #   resources:
     #     reservations:
@@ -88,4 +86,6 @@ volumes:
   qdrant-storage:
     driver: local
   models-cache:
+    driver: local
+  app-data:
     driver: local
