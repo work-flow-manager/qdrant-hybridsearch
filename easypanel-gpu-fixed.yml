@@ -1,0 +1,109 @@
+services:
+  # Qdrant com suporte GPU NVIDIA
+  qdrant:
+    image: qdrant/qdrant:v1.13.0-gpu-nvidia
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    environment:
+      # Configurações básicas
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__LOG_LEVEL: "INFO"
+      
+      # Ativar GPU no Qdrant
+      QDRANT__GPU__INDEXING: "1"
+      QDRANT__GPU__FORCE_HALF_PRECISION: "false"
+      QDRANT__GPU__GROUPS_COUNT: "512"
+      QDRANT__GPU__PARALLEL_INDEXES: "1"
+      
+    # Runtime GPU para Qdrant
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - app-network
+
+  # API com suporte GPU
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.fixed
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - models-cache:/app/models
+      - app-data:/app/data
+    environment:
+      # API Configuration
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_KEY: "Gw9iEdSGbAlsyoiT5YEJUbCy6O33bfxs9CV2-iZQjN4"
+      
+      # Qdrant Configuration
+      QDRANT_HOST: "qdrant"
+      QDRANT_PORT: "6333"
+      QDRANT_COLLECTION: "hybrid_search"
+      
+      # Model Configuration
+      DENSE_MODEL: "intfloat/multilingual-e5-large"
+      SPARSE_MODEL: "prithivida/Splade_PP_en_v1"
+      
+      # GPU Settings
+      USE_GPU: "true"
+      CUDA_DEVICE: "0"
+      CUDA_VISIBLE_DEVICES: "0"
+      BATCH_SIZE: "64"
+      MAX_SEQUENCE_LENGTH: "512"
+      
+      # Performance
+      NUM_WORKERS: "4"
+      CACHE_EMBEDDINGS: "true"
+      EMBEDDING_CACHE_SIZE: "10000"
+      
+      # n8n Integration
+      N8N_WEBHOOK_ENABLED: "true"
+      N8N_WEBHOOK_TIMEOUT: "30"
+      
+      # Logging
+      LOG_LEVEL: "INFO"
+      LOG_FORMAT: "json"
+      
+      # CORS
+      CORS_ENABLED: "true"
+      CORS_ORIGINS: '["*"]'
+      
+    depends_on:
+      - qdrant
+    networks:
+      - app-network
+    # Runtime GPU para App
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  qdrant-storage:
+    driver: local
+  models-cache:
+    driver: local
+  app-data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
