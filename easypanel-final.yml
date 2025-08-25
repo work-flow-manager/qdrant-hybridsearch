@@ -67,14 +67,14 @@ services:
       - qdrant
     networks:
       - app-network
-    # Descomente as linhas abaixo SE o NVIDIA Container Toolkit estiver instalado
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # GPU ATIVADA - Remova os # abaixo após instalar NVIDIA Container Toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   qdrant-storage:
