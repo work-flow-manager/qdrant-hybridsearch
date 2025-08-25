@@ -1,0 +1,143 @@
+# Dockerfile de Produção - Otimizado para Easypanel
+# Usa imagem Python oficial com suporte opcional para GPU
+FROM python:3.11-slim-bullseye
+
+# Configurações de ambiente
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/models \
+    DEBIAN_FRONTEND=noninteractive
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copiar e instalar requirements
+COPY requirements.txt .
+
+# Instalar PyTorch CPU (GPU será detectado se disponível via --gpus all)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir \
+    transformers==4.36.2 \
+    sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1 \
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0
+
+# Copiar código da aplicação
+COPY app/ /app/app/
+COPY .env.example /app/.env.example
+
+# Criar diretórios necessários
+RUN mkdir -p /app/data /app/models /app/logs && \
+    chmod -R 777 /app/models /app/data /app/logs
+
+# Script de inicialização robusto
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "================================================"
+echo "🚀 Iniciando Qdrant Hybrid Search API"
+echo "================================================"
+
+# Informações do ambiente
+echo "📦 Ambiente:"
+echo "   Python: $(python --version)"
+echo "   PyTorch: $(python -c 'import torch; print(torch.__version__)')"
+echo "   CPU Cores: $(nproc)"
+echo "   Memory: $(free -h | grep Mem | awk '{print $2}')"
+
+# Detectar GPU se disponível
+python -c "
+import torch
+import os
+
+if torch.cuda.is_available():
+    print(f'✅ GPU detectada: {torch.cuda.get_device_name(0)}')
+    os.environ['USE_GPU'] = 'true'
+else:
+    print('ℹ️  Modo CPU ativado')
+    os.environ['USE_GPU'] = 'false'
+"
+
+# Verificar conexão com Qdrant
+echo ""
+echo "🔗 Conectando ao Qdrant..."
+python -c "
+import os
+import time
+from qdrant_client import QdrantClient
+
+host = os.getenv('QDRANT_HOST', 'localhost')
+port = int(os.getenv('QDRANT_PORT', 6333))
+
+max_retries = 30
+connected = False
+
+for i in range(max_retries):
+    try:
+        client = QdrantClient(host=host, port=port)
+        collections = client.get_collections()
+        print(f'✅ Qdrant conectado em {host}:{port}')
+        connected = True
+        break
+    except Exception as e:
+        if i == 0:
+            print(f'⏳ Aguardando Qdrant em {host}:{port}...')
+        time.sleep(2)
+
+if not connected:
+    print(f'⚠️  Qdrant não disponível, continuando mesmo assim...')
+"
+
+echo ""
+echo "================================================"
+echo "🌐 Servidor FastAPI iniciando na porta 8000..."
+echo "================================================"
+
+# Iniciar servidor
+exec uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1 \
+    --log-level info
+EOF
+
+RUN chmod +x /app/start.sh
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Expor porta
+EXPOSE 8000
+
+# Comando padrão
+CMD ["/app/start.sh"]

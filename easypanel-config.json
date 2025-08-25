@@ -1,0 +1,90 @@
+{
+  "name": "qdrant-hybrid-search",
+  "services": {
+    "qdrant": {
+      "image": "qdrant/qdrant:latest",
+      "volumes": [
+        {
+          "name": "qdrant-storage",
+          "mountPath": "/qdrant/storage"
+        }
+      ],
+      "env": {
+        "QDRANT__SERVICE__HTTP_PORT": "6333",
+        "QDRANT__SERVICE__GRPC_PORT": "6334",
+        "QDRANT__LOG_LEVEL": "INFO"
+      },
+      "deploy": {
+        "replicas": 1,
+        "restartPolicy": "unless-stopped",
+        "resources": {
+          "limits": {
+            "memory": "2Gi"
+          },
+          "requests": {
+            "memory": "1Gi"
+          }
+        }
+      }
+    },
+    "app": {
+      "image": "ghcr.io/your-username/qdrant-hybrid-search:latest",
+      "ports": [
+        {
+          "published": 8000,
+          "target": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "volumes": [
+        {
+          "name": "models-cache",
+          "mountPath": "/app/models"
+        },
+        {
+          "name": "app-data",
+          "mountPath": "/app/data"
+        }
+      ],
+      "env": {
+        "API_HOST": "0.0.0.0",
+        "API_PORT": "8000",
+        "QDRANT_HOST": "qdrant",
+        "QDRANT_PORT": "6333",
+        "QDRANT_COLLECTION": "hybrid_search",
+        "DENSE_MODEL": "intfloat/multilingual-e5-large",
+        "SPARSE_MODEL": "prithivida/Splade_PP_en_v1",
+        "USE_GPU": "false",
+        "BATCH_SIZE": "16",
+        "MAX_SEQUENCE_LENGTH": "512",
+        "NUM_WORKERS": "2",
+        "CACHE_EMBEDDINGS": "true",
+        "EMBEDDING_CACHE_SIZE": "5000",
+        "N8N_WEBHOOK_ENABLED": "true",
+        "LOG_LEVEL": "INFO",
+        "CORS_ENABLED": "true",
+        "CORS_ORIGINS": "[\"*\"]"
+      },
+      "deploy": {
+        "replicas": 1,
+        "restartPolicy": "unless-stopped",
+        "resources": {
+          "limits": {
+            "memory": "4Gi"
+          },
+          "requests": {
+            "memory": "2Gi"
+          }
+        }
+      },
+      "dependsOn": ["qdrant"]
+    }
+  },
+  "domains": [
+    {
+      "host": "qdrant-search.yourdomain.com",
+      "port": 8000,
+      "service": "app"
+    }
+  ]
+}

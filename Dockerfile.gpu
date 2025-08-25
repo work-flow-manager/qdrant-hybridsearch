@@ -1,46 +1,64 @@
-# Dockerfile com suporte GPU para Easypanel
+# Dockerfile Otimizado para GPU com --gpus all
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
-# Variáveis de ambiente para GPU
-ENV DEBIAN_FRONTEND=noninteractive \
+# Configurações de ambiente para GPU
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    CUDA_VISIBLE_DEVICES=0 \
+    DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    CUDA_VISIBLE_DEVICES=0 \
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0" \
     HF_HOME=/app/models \
     TRANSFORMERS_CACHE=/app/models \
     SENTENCE_TRANSFORMERS_HOME=/app/models \
-    USE_GPU=true
+    TORCH_CUDA_ARCH_LIST="6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0" \
+    CUDA_LAUNCH_BLOCKING=0 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
-# Instalar Python e dependências do sistema
+# Instalar dependências do sistema e Python 3.11
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-dev \
     python3-pip \
+    python3.11-distutils \
     git \
     curl \
+    wget \
     gcc \
     g++ \
-    && rm -rf /var/lib/apt/lists/*
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
-# Diretório de trabalho
+# Verificar CUDA
+RUN nvidia-smi || echo "GPU não detectada durante build (normal)"
+
 WORKDIR /app
 
-# Copiar requirements
+# Copiar requirements primeiro (melhor cache)
 COPY requirements.txt .
 
-# Instalar PyTorch com suporte CUDA
-RUN python3 -m pip install --upgrade pip && \
-    pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+# Instalar PyTorch com suporte CUDA 12.1
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    python3 -m pip install --no-cache-dir \
+    torch==2.1.0+cu121 \
+    torchvision==0.16.0+cu121 \
+    torchaudio==2.1.0+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
 
-# Instalar outras dependências
-RUN pip install --no-cache-dir \
-    transformers==4.36.0 \
+# Instalar dependências principais
+RUN python3 -m pip install --no-cache-dir \
+    transformers==4.36.2 \
     sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
     qdrant-client==1.7.0 \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
     numpy==1.24.3 \
     scikit-learn==1.3.2 \
     python-multipart==0.0.6 \
@@ -48,32 +66,98 @@ RUN pip install --no-cache-dir \
     python-jose[cryptography]==3.3.0 \
     passlib[bcrypt]==1.7.4 \
     aiofiles==23.2.1 \
-    accelerate==0.25.0
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0 \
+    nvidia-ml-py3==7.352.0
 
 # Copiar código da aplicação
 COPY app/ /app/app/
+COPY .env.example /app/.env.example
 
 # Criar diretórios necessários
-RUN mkdir -p /app/data /app/models
+RUN mkdir -p /app/data /app/models /app/logs
 
-# Script de inicialização com verificação de GPU
-RUN echo '#!/bin/bash\n\
-echo "🚀 Iniciando com suporte GPU..."\n\
-echo "📊 Verificando GPU disponível:"\n\
-python3 -c "import torch; print(f\"CUDA disponível: {torch.cuda.is_available()}\"); print(f\"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"Não detectada\"}\")" \n\
-echo "📦 Baixando modelos (se necessário)..."\n\
-python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"intfloat/multilingual-e5-large\")" || true\n\
-python3 -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; AutoTokenizer.from_pretrained(\"prithivida/Splade_PP_en_v1\"); AutoModelForMaskedLM.from_pretrained(\"prithivida/Splade_PP_en_v1\")" || true\n\
-echo "✅ Sistema pronto! Iniciando API..."\n\
-exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1' > /app/start.sh && \
-    chmod +x /app/start.sh
+# Script de inicialização com detecção de GPU
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+echo "================================================"
+echo "🚀 Iniciando Qdrant Hybrid Search com GPU Support"
+echo "================================================"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+# Detectar GPU
+python3 -c "
+import torch
+import os
+import sys
+
+print('🔍 Verificando hardware disponível...')
+print('=' * 50)
+
+if torch.cuda.is_available():
+    print(f'✅ GPU DETECTADA: {torch.cuda.get_device_name(0)}')
+    print(f'   CUDA Version: {torch.version.cuda}')
+    print(f'   PyTorch CUDA: {torch.cuda.is_available()}')
+    print(f'   Dispositivos: {torch.cuda.device_count()}')
+    print(f'   Memória GPU: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB')
+    os.environ['USE_GPU'] = 'true'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+else:
+    print('⚠️  GPU não disponível - usando CPU')
+    print('   Para usar GPU, execute com: docker run --gpus all')
+    os.environ['USE_GPU'] = 'false'
+
+print('=' * 50)
+"
+
+# Verificar conexão com Qdrant
+echo "🔗 Verificando conexão com Qdrant..."
+python3 -c "
+import os
+from qdrant_client import QdrantClient
+import time
+
+qdrant_host = os.getenv('QDRANT_HOST', 'localhost')
+qdrant_port = int(os.getenv('QDRANT_PORT', 6333))
+
+for i in range(30):
+    try:
+        client = QdrantClient(host=qdrant_host, port=qdrant_port)
+        collections = client.get_collections()
+        print(f'✅ Qdrant conectado em {qdrant_host}:{qdrant_port}')
+        break
+    except:
+        if i == 0:
+            print(f'⏳ Aguardando Qdrant em {qdrant_host}:{qdrant_port}...')
+        time.sleep(2)
+else:
+    print(f'⚠️  Qdrant não disponível em {qdrant_host}:{qdrant_port}')
+    print('   A aplicação iniciará mesmo assim')
+"
+
+echo "================================================"
+echo "🌐 Iniciando servidor FastAPI..."
+echo "================================================"
+
+# Iniciar aplicação
+exec python3 -m uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1 \
+    --loop uvloop \
+    --log-level info
+EOF
+
+RUN chmod +x /app/start.sh
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Porta
+# Expor porta
 EXPOSE 8000
 
-# Comando
+# Comando de inicialização
 CMD ["/app/start.sh"]

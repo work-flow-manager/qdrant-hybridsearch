@@ -1,5 +1,6 @@
-# Dockerfile otimizado para Easypanel - Build mais rápido sem GPU
-FROM python:3.11-slim
+# Dockerfile Alternativo - Resolve problema de timeout com NVIDIA registry
+# Opção 1: Imagem Ubuntu com CUDA instalado manualmente
+FROM ubuntu:22.04
 
 # Variáveis de ambiente
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -7,61 +8,86 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/models \
     TRANSFORMERS_CACHE=/app/models \
-    SENTENCE_TRANSFORMERS_HOME=/app/models
+    SENTENCE_TRANSFORMERS_HOME=/app/models \
+    TZ=UTC
 
-# Instalar dependências do sistema
+# Instalar dependências base
 RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    git \
+    curl \
+    wget \
     gcc \
     g++ \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+    build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
 
-# Diretório de trabalho
 WORKDIR /app
 
 # Copiar requirements
 COPY requirements.txt .
 
-# Instalar dependências Python (versão CPU)
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-    torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir \
-    transformers==4.36.0 \
+# Instalar PyTorch (versão CPU primeiro, GPU será detectado em runtime)
+RUN pip3 install --no-cache-dir \
+    torch==2.1.0 \
+    torchvision==0.16.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Instalar outras dependências
+RUN pip3 install --no-cache-dir \
+    transformers==4.36.2 \
     sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
     qdrant-client==1.7.0 \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
     numpy==1.24.3 \
     scikit-learn==1.3.2 \
     python-multipart==0.0.6 \
     httpx==0.25.1 \
     python-jose[cryptography]==3.3.0 \
     passlib[bcrypt]==1.7.4 \
-    aiofiles==23.2.1
+    aiofiles==23.2.1 \
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0
 
-# Copiar código da aplicação
+# Copiar aplicação
 COPY app/ /app/app/
 
-# Criar diretórios necessários
-RUN mkdir -p /app/data /app/models
+# Criar diretórios
+RUN mkdir -p /app/data /app/models /app/logs
 
-# Script de inicialização para download de modelos
-RUN echo '#!/bin/bash\n\
-echo "Baixando modelos na primeira execução..."\n\
-python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"intfloat/multilingual-e5-large\")" || true\n\
-python3 -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; AutoTokenizer.from_pretrained(\"prithivida/Splade_PP_en_v1\"); AutoModelForMaskedLM.from_pretrained(\"prithivida/Splade_PP_en_v1\")" || true\n\
-echo "Iniciando API..."\n\
-exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1' > /app/start.sh && \
-    chmod +x /app/start.sh
+# Script de inicialização simplificado
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+echo "🚀 Iniciando Qdrant Hybrid Search..."
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Verificar Python e PyTorch
+python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA disponível: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+"
 
-# Porta
+# Iniciar aplicação
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+EOF
+
+RUN chmod +x /app/start.sh
+
 EXPOSE 8000
 
-# Comando de inicialização
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
 CMD ["/app/start.sh"]
