@@ -1,64 +1,91 @@
-# Multi-stage build for optimized image with GPU support
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04 AS base
+# Dockerfile PRINCIPAL - Funciona com ou sem GPU
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
-# Set environment variables
-ENV DEBIAN_FRONTEND=noninteractive \
+# Configurações
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    CUDA_VISIBLE_DEVICES=0 \
+    DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    CUDA_VISIBLE_DEVICES=0 \
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9" \
     HF_HOME=/app/models \
     TRANSFORMERS_CACHE=/app/models \
     SENTENCE_TRANSFORMERS_HOME=/app/models
 
-# Install system dependencies
+# Instalar Python 3.11
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-dev \
     python3-pip \
+    python3.11-distutils \
     git \
-    wget \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
-# Create app directory
 WORKDIR /app
 
-# Copy requirements first for better caching
+# Copiar requirements
 COPY requirements.txt .
 
-# Upgrade pip first
-RUN python3 -m pip install --upgrade pip setuptools wheel
+# Instalar PyTorch com CUDA 12.1
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    python3 -m pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121
 
-# Install Python dependencies with CUDA support
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Instalar dependências
+RUN python3 -m pip install --no-cache-dir \
+    transformers==4.36.2 \
+    sentence-transformers==2.2.2 \
+    huggingface-hub==0.19.4 \
+    qdrant-client==1.7.0 \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0 \
+    numpy==1.24.3 \
+    scikit-learn==1.3.2 \
+    python-multipart==0.0.6 \
+    httpx==0.25.1 \
+    python-jose[cryptography]==3.3.0 \
+    passlib[bcrypt]==1.7.4 \
+    aiofiles==23.2.1 \
+    accelerate==0.25.0 \
+    structlog==23.2.0 \
+    uvloop==0.19.0 \
+    scipy==1.11.4 \
+    pillow==10.1.0
 
-# Pre-download models during build
-RUN python3 -c "from sentence_transformers import SentenceTransformer; \
-    model = SentenceTransformer('intfloat/multilingual-e5-large'); \
-    print('Dense model downloaded')"
-
-RUN python3 -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; \
-    tokenizer = AutoTokenizer.from_pretrained('prithivida/Splade_PP_en_v1'); \
-    model = AutoModelForMaskedLM.from_pretrained('prithivida/Splade_PP_en_v1'); \
-    print('Sparse model downloaded')"
-
-# Copy application code
+# Copiar código
 COPY app/ /app/app/
 
-# Create data directory
-RUN mkdir -p /app/data
+# Criar diretórios
+RUN mkdir -p /app/data /app/models
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Script de inicialização
+RUN cat > /app/start.sh << 'EOF'
+#!/bin/bash
+echo "🚀 Iniciando Qdrant Hybrid Search..."
+python3 -c "
+import torch
+import os
+if torch.cuda.is_available():
+    print(f'✅ GPU detectada: {torch.cuda.get_device_name(0)}')
+    os.environ['USE_GPU'] = 'true'
+else:
+    print('⚠️ GPU não disponível - usando CPU')
+    os.environ['USE_GPU'] = 'false'
+"
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+EOF
+
+RUN chmod +x /app/start.sh
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["python3", "-m", "uvicorn", "app.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "1", \
-     "--loop", "uvloop"]
+CMD ["/app/start.sh"]
