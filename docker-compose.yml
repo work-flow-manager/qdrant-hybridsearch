@@ -22,7 +22,7 @@ services:
   hybrid-search-api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.simple
     container_name: hybrid-search-api
     restart: unless-stopped
     ports:
@@ -72,14 +72,15 @@ services:
       - qdrant
     networks:
       - qdrant-network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    runtime: nvidia
+    # GPU support - uncomment if nvidia-docker is installed
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # runtime: nvidia
 
 networks:
   qdrant-network:

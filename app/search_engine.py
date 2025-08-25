@@ -200,10 +200,14 @@ class HybridSearchEngine:
             # Prepare points for Qdrant
             points = []
             for i, doc in enumerate(documents):
-                doc_id = doc.get("id", hashlib.md5(doc["text"].encode()).hexdigest())
+                # Generate a unique ID for each document
+                if doc.get("id"):
+                    doc_id = str(doc["id"])
+                else:
+                    doc_id = hashlib.md5(doc["text"].encode()).hexdigest()
                 
                 point = PointStruct(
-                    id=doc_id,
+                    id=doc_id,  # Use the document ID directly
                     vector={
                         "dense": dense_embeddings[i].tolist()
                     },
@@ -226,15 +230,18 @@ class HybridSearchEngine:
                 # Also upload sparse vectors
                 sparse_batch = sparse_embeddings[i:i + batch_size]
                 for j, point in enumerate(batch):
-                    self.qdrant_client.update_vectors(
-                        collection_name=collection_name,
-                        points=[
-                            models.PointVectors(
-                                id=point.id,
-                                vector={"sparse": sparse_batch[j]}
-                            )
-                        ]
-                    )
+                    try:
+                        self.qdrant_client.update_vectors(
+                            collection_name=collection_name,
+                            points=[
+                                models.PointVectors(
+                                    id=point.id,
+                                    vector={"sparse": sparse_batch[j]}
+                                )
+                            ]
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not update sparse vector for point {point.id}: {e}")
                 
                 indexed_count += len(batch)
                 logger.info(f"Indexed {indexed_count}/{len(documents)} documents")
